@@ -1,65 +1,99 @@
-﻿using System.Net.Sockets;
+﻿using System;
+using System.Collections.Generic;
 using System.Net;
+using System.Net.Sockets;
 using System.Text;
+using System.Threading;
 
-internal class Program
+class Program
 {
-    private static void Main(string[] args)
+    static List<TcpClient> clients = new List<TcpClient>(); // Lista a csatlakozott kliensek tárolására
+    static bool gameStarted = false; // Játék kezdési állapot
+
+    static void Main()
     {
-        int port = 12345; // A port, amelyen a szerver figyel
-        TcpListener server = null;
+        TcpListener server = new TcpListener(IPAddress.Parse("127.0.0.1"), 5000);
+        server.Start();
+        Console.WriteLine("Szerver indult...");
 
-        try
+        while (true)
         {
-            // Szerver inicializálása
-            server = new TcpListener(IPAddress.Any, port);
-            server.Start();
-            Console.WriteLine($"Szerver elindult és figyel a {port} porton...");
+            // Várakozás új kliens csatlakozására
+            TcpClient client = server.AcceptTcpClient();
+            clients.Add(client);
+            Console.WriteLine("Új kliens csatlakozott!");
 
-            while (true)
+            Thread clientThread = new Thread(() => HandleClient(client));
+            clientThread.Start();
+        }
+    }
+
+    static void HandleClient(TcpClient client)
+    {
+        NetworkStream stream = client.GetStream();
+        byte[] buffer = new byte[1024];
+        int bytesRead;
+
+        // Várakozás a "join" üzenetre
+        bytesRead = stream.Read(buffer, 0, buffer.Length);
+        string message = Encoding.UTF8.GetString(buffer, 0, bytesRead).Trim();
+
+        if (message == "join")
+        {
+            // Ha van elég hely, válaszolj "ok"-kal
+            if (clients.Count == 1)
             {
-                Console.WriteLine("Várakozás kapcsolatra...");
-                TcpClient client = server.AcceptTcpClient();
-                Console.WriteLine("Kapcsolat létrejött!");
+                // Az első kliens csatlakozik, válaszolj "ok"-kal
+                SendMessage(client, "ok");
+            }
+            else if (clients.Count == 2)
+            {
+                // A második kliens csatlakozik
+                SendMessage(client, "ok");
+                // Küldd el az "isactive" üzenetet az első kliensnek
+                SendMessage(clients[0], "isactive");
+                // Küldd el az "isactive" üzenetet a második kliensnek is
+                SendMessage(client, "isactive");
+            }
+            else
+            {
+                // Ha a szerver tele van
+                SendMessage(client, "Server full");
+            }
 
-                try
-                {
-                    // Üzenet fogadása
-                    NetworkStream stream = client.GetStream();
-                    byte[] buffer = new byte[1024];
-                    int bytesRead = stream.Read(buffer, 0, buffer.Length);
-                    string clientMessage = Encoding.UTF8.GetString(buffer, 0, bytesRead);
+            // Várakozás, amíg mindkét kliens aktív válasza megérkezik
+            bool allActive = false;
+            while (!allActive)
+            {
+                string response1 = ReceiveMessage(clients[0]);
+                string response2 = ReceiveMessage(clients[1]);
 
-                    Console.WriteLine($"Üzenet a klienstől: {clientMessage}");
-
-                    // Válasz küldése a kliensnek
-                    string response = "Üdv, kliens! A szerver fogadta az üzenetedet.";
-                    byte[] responseData = Encoding.UTF8.GetBytes(response);
-                    stream.Write(responseData, 0, responseData.Length);
-                }
-                catch (Exception ex)
+                if (response1 == "active" && response2 == "active")
                 {
-                    Console.WriteLine($"Hiba történt a kliens kezelésében: {ex.Message}");
-                }
-                finally
-                {
-                    client.Close();
-                    Console.WriteLine("Kapcsolat lezárva.");
+                    allActive = true;
+                    // Ha mindkét kliens aktív, indítsuk el a játékot
+                    foreach (var c in clients)
+                    {
+                        SendMessage(c, "start");
+                    }
+                    Console.WriteLine("A játék elindult!");
                 }
             }
         }
-        catch (SocketException ex)
-        {
-            Console.WriteLine($"Socket hiba történt: {ex.Message}");
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Hiba történt: {ex.Message}");
-        }
-        finally
-        {
-            server?.Stop();
-            Console.WriteLine("Szerver leállt.");
-        }
+    }
+
+    static string ReceiveMessage(TcpClient client)
+    {
+        NetworkStream stream = client.GetStream();
+        byte[] buffer = new byte[1024];
+        int bytesRead = stream.Read(buffer, 0, buffer.Length);
+        return Encoding.UTF8.GetString(buffer, 0, bytesRead).Trim();
+    }
+
+    static void SendMessage(TcpClient client, string message)
+    {
+        NetworkStream stream = client.GetStream();
+        byte[] data = Encoding.UTF8.GetBytes(message);
+        stream.Write(data, 0, data.Length);
     }
 }
