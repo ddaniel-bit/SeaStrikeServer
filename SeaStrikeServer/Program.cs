@@ -7,93 +7,110 @@ using System.Threading;
 
 class Program
 {
-    static List<TcpClient> clients = new List<TcpClient>(); // Lista a csatlakozott kliensek tárolására
-    static bool gameStarted = false; // Játék kezdési állapot
+    private static List<TcpClient> clients = new List<TcpClient>();
+    private static readonly object clientLock = new object();
+    private static int connectedClients = 0; // A csatlakozott kliensek száma
 
-    static void Main()
+    static void Main(string[] args)
     {
-        TcpListener server = new TcpListener(IPAddress.Parse("127.0.0.1"), 5000);
-        server.Start();
-        Console.WriteLine("Szerver indult...");
+        const int port = 8080;
+        TcpListener listener = new TcpListener(IPAddress.Any, port);
+        listener.Start();
+
+        Console.WriteLine("Szerver fut...");
 
         while (true)
         {
-            // Várakozás új kliens csatlakozására
-            TcpClient client = server.AcceptTcpClient();
-            clients.Add(client);
-            Console.WriteLine("Új kliens csatlakozott!");
+            Console.WriteLine("Új kliens csatlakozására várakozás...");
+            TcpClient newClient = listener.AcceptTcpClient();
 
-            Thread clientThread = new Thread(() => HandleClient(client));
+            lock (clientLock)
+            {
+                clients.Add(newClient);
+                connectedClients++;
+            }
+
+            Console.WriteLine($"Új kliens csatlakozott! Jelenlegi kliensek száma: {connectedClients}");
+
+            // Új szál indítása a kliens kezelésére
+            Thread clientThread = new Thread(() => HandleClient(newClient));
             clientThread.Start();
-        }
-    }
 
-    static void HandleClient(TcpClient client)
-    {
-        NetworkStream stream = client.GetStream();
-        byte[] buffer = new byte[1024];
-        int bytesRead;
-
-        // Várakozás a "join" üzenetre
-        bytesRead = stream.Read(buffer, 0, buffer.Length);
-        string message = Encoding.UTF8.GetString(buffer, 0, bytesRead).Trim();
-
-        if (message == "join")
-        {
-            // Ha van elég hely, válaszolj "ok"-kal
-            if (clients.Count == 1)
+            // Ellenőrizzük, hogy mindkét kliens csatlakozott-e
+            lock (clientLock)
             {
-                // Az első kliens csatlakozik, válaszolj "ok"-kal
-                SendMessage(client, "ok");
-            }
-            else if (clients.Count == 2)
-            {
-                // A második kliens csatlakozik
-                SendMessage(client, "ok");
-                // Küldd el az "isactive" üzenetet az első kliensnek
-                SendMessage(clients[0], "isactive");
-                // Küldd el az "isactive" üzenetet a második kliensnek is
-                SendMessage(client, "isactive");
-            }
-            else
-            {
-                // Ha a szerver tele van
-                SendMessage(client, "Server full");
-            }
-
-            // Várakozás, amíg mindkét kliens aktív válasza megérkezik
-            bool allActive = false;
-            while (!allActive)
-            {
-                string response1 = ReceiveMessage(clients[0]);
-                string response2 = ReceiveMessage(clients[1]);
-
-                if (response1 == "active" && response2 == "active")
+                if (connectedClients == 2)
                 {
-                    allActive = true;
-                    // Ha mindkét kliens aktív, indítsuk el a játékot
-                    foreach (var c in clients)
-                    {
-                        SendMessage(c, "start");
-                    }
-                    Console.WriteLine("A játék elindult!");
+                    BroadcastMessage("start");
+                    Console.WriteLine("Mindkét kliens csatlakozott! 'start' üzenet kiküldve.");
                 }
             }
         }
     }
 
-    static string ReceiveMessage(TcpClient client)
+    private static void HandleClient(TcpClient client)
     {
-        NetworkStream stream = client.GetStream();
-        byte[] buffer = new byte[1024];
-        int bytesRead = stream.Read(buffer, 0, buffer.Length);
-        return Encoding.UTF8.GetString(buffer, 0, bytesRead).Trim();
+        try
+        {
+            using NetworkStream stream = client.GetStream();
+            byte[] buffer = new byte[1024];
+
+            // Üzenetek kezelése a klienssel
+            while (true)
+            {
+                int bytesRead = stream.Read(buffer, 0, buffer.Length);
+                if (bytesRead == 0)
+                {
+                    Console.WriteLine("Kliens levált.");
+                    break;
+                }
+
+                string message = Encoding.UTF8.GetString(buffer, 0, bytesRead);
+                Console.WriteLine($"Üzenet a klienstől: {message}");
+
+                // Például: válasz visszaküldése
+                if (message.Trim().ToLower() == "join")
+                {
+                    string response = "ok";
+                    byte[] responseBytes = Encoding.UTF8.GetBytes(response);
+                    stream.Write(responseBytes, 0, responseBytes.Length);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Hiba a kliens kezelésében: {ex.Message}");
+        }
+        finally
+        {
+            lock (clientLock)
+            {
+                clients.Remove(client);
+                connectedClients--;
+                Console.WriteLine($"Kliens eltávolítva. Jelenlegi kliensek száma: {connectedClients}");
+            }
+            client.Close();
+            Console.WriteLine("Kliens kapcsolat bezárva.");
+        }
     }
 
-    static void SendMessage(TcpClient client, string message)
+    private static void BroadcastMessage(string message)
     {
-        NetworkStream stream = client.GetStream();
-        byte[] data = Encoding.UTF8.GetBytes(message);
-        stream.Write(data, 0, data.Length);
+        lock (clientLock)
+        {
+            byte[] messageBytes = Encoding.UTF8.GetBytes(message);
+            foreach (var client in clients)
+            {
+                try
+                {
+                    NetworkStream stream = client.GetStream();
+                    stream.Write(messageBytes, 0, messageBytes.Length);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Hiba az üzenet küldésekor: {ex.Message}");
+                }
+            }
+        }
     }
 }
