@@ -163,6 +163,7 @@ namespace SeaStrikeServer
                 NetworkStream stream = client.GetStream();
                 byte[] messageBytes = Encoding.UTF8.GetBytes(message);
                 await stream.WriteAsync(messageBytes, 0, messageBytes.Length);
+                Console.WriteLine($"DEBUG | Üzenet elküldve Kliens:{client}, Üzenet:{message}");
             }
         }
 
